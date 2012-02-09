@@ -1,0 +1,27 @@
+name:                hreact
+version:             0.0.1
+synopsis:            <TODO>
+description:         <TODO>
+homepage:            https://github.com/xfire/hreact
+bug-reports:         https://github.com/xfire/hreact/issues
+license:             OtherLicense
+license-file:        LICENSE
+author:              Rico Schiekel
+maintainer:          hreact@downgra.de
+category:            Web
+build-type:          Simple
+stability:           experimental
+cabal-version:       >=1.2
+tested-with:         GHC >=7.0.3
+
+data-files:          LICENSE
+
+library
+  hs-source-dirs:    .
+  build-depends:     base,
+                     filepath,
+                     directory
+
+source-repository head
+  type:              git
+  location:          git@github.com:xfire/hreact.git
