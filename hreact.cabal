@@ -16,11 +16,14 @@ tested-with:         GHC >=7.0.3
 
 data-files:          LICENSE
 
-library
-  hs-source-dirs:    .
-  build-depends:     base,
-                     filepath,
-                     directory
+Executable hreact
+    Main-is:         hreact.hs
+    Build-Depends:   base,
+                     time,
+                     regex-posix,
+                     process,
+                     hinotify >= 0.3.1
+
 
 source-repository head
   type:              git
