@@ -1,5 +1,6 @@
 import System.IO
 import System.Environment (getArgs, getProgName)
+import Data.Time (getCurrentTime)
 import System.Exit (exitWith, ExitCode (ExitSuccess, ExitFailure))
 import System.Console.GetOpt
 import System.Process
@@ -7,9 +8,6 @@ import Data.Char (ord)
 import Control.Monad (when)
 import Text.Regex.Posix ((=~))
 import System.INotify
-import System.Time
-import System.Locale
-import System.Environment
 
 data Options = Options
     { optRegex :: Maybe String
@@ -93,8 +91,8 @@ executeAction cmd = do
     system cmd
     putStr $ take 20 $ repeat '-'
     putStr " "
-    time <- getClockTime >>= toCalendarTime
-    putStrLn $ formatCalendarTime defaultTimeLocale "%a %b %e %H:%M:%S %Z %Y" time
+    time <- getCurrentTime
+    putStrLn $ show time
 
 filterPath :: Options -> FilePath -> Bool
 filterPath o path = or $ fmap ($ path) [filterRegex $ optRegex o, filterGlob $ optGlob o] 
