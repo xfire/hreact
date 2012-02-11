@@ -22,6 +22,7 @@ Executable hreact
                      time,
                      regex-posix,
                      process,
+                     filemanip,
                      hinotify >= 0.3.1
 
 

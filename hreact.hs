@@ -8,26 +8,29 @@ import Data.Char (ord)
 import Control.Monad (when)
 import Text.Regex.Posix ((=~))
 import System.INotify
+import System.FilePath.GlobPattern ((~~))
+import System.FilePath.Find
 
+ 
 data Options = Options
     { optRegex :: Maybe String
-    , optGlob :: Maybe String
+    , optGlobPattern :: Maybe String
     } deriving Show
 defaultOptions = Options
     { optRegex = Nothing
-    , optGlob = Nothing
+    , optGlobPattern = Nothing
     }
 
 options :: [ OptDescr (Options -> IO Options) ]
 options =
-    [ Option ['r'] ["regex"]    (OptArg regex "REGEX") "Regex"
-    , Option ['g'] ["glob"]     (OptArg glob "GLOB") "Glob Pattern"
-    , Option ['V'] ["version"]  (NoArg $ const $ showVersion >> exitWithSuccess) "Print version"
-    , Option ['h'] ["help"]     (NoArg $ const $ showHelp >> exitWithSuccess) "Show help"
+    [ Option ['r'] ["regex"]    (OptArg regex "REGEX") "regex"
+    , Option ['p'] ["pattern"]  (OptArg glob "PATTERN") "shell glob pattern"
+    , Option ['V'] ["version"]  (NoArg $ const $ showVersion >> exitWithSuccess) "print version"
+    , Option ['h'] ["help"]     (NoArg $ const $ showHelp >> exitWithSuccess) "show help"
     ]
 
 regex arg opt = return opt { optRegex = arg }
-glob arg opt = return opt { optGlob = arg }
+glob arg opt = return opt { optGlobPattern = arg }
 
 showVersion :: IO ()
 showVersion = do
@@ -36,7 +39,7 @@ showVersion = do
 showHelp :: IO ()
 showHelp = do
     prg <- getProgName
-    let header = prg ++ " [OPTIONS] path command"
+    let header = "usage: " ++ prg ++ " [OPTIONS] directory command"
     hPutStrLn stderr ((usageInfo header options))
     hFlush stderr
 
@@ -58,11 +61,17 @@ parseArgs args = do
 
 watch :: FilePath -> String -> (FilePath -> Bool) -> IO ()
 watch path cmd filter = do
-    inotify <- initINotify
-    wd <- addWatch inotify [ Create, Delete, Modify, Move ] path $ handleEvent cmd filter
-    putStrLn "Listens to your home directory. Hit enter to terminate."
-    loop cmd
-    removeWatch inotify wd
+        inotify <- initINotify
+        dirs <- getAllDirectories path
+        mapM_ (watchSingle inotify cmd filter) (path : dirs)
+        putStrLn "Listens to your home directory. Hit enter to terminate."
+        loop cmd
+        {- removeWatch inotify wd -}
+    where getAllDirectories :: FilePath -> IO [FilePath]
+          getAllDirectories path = find always (fileType ==? Directory) path
+
+          watchSingle :: INotify -> String -> (FilePath -> Bool) -> FilePath -> IO WatchDescriptor
+          watchSingle inotify cmd filter path = addWatch inotify [ Create, Delete, Modify, Move ] path $ handleEvent cmd filter
 
 loop :: String -> IO ()
 loop cmd = do
@@ -95,13 +104,13 @@ executeAction cmd = do
     putStrLn $ show time
 
 filterPath :: Options -> FilePath -> Bool
-filterPath o path = or $ fmap ($ path) [filterRegex $ optRegex o, filterGlob $ optGlob o] 
+filterPath o path = or $ fmap ($ path) [filterRegex $ optRegex o, filterGlob $ optGlobPattern o] 
     where filterRegex :: Maybe String -> FilePath -> Bool
           filterRegex (Just regex) path = path =~ regex
-          filterRegex _ _ = True
+          filterRegex _ _ = False
 
           filterGlob :: Maybe String -> FilePath -> Bool
-          filterGlob (Just glob) path = False
+          filterGlob (Just glob) path = path ~~ glob
           filterGlob _ _ = False
 
 main = do
