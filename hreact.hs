@@ -29,6 +29,7 @@ data Options = Options {
     , optCommand :: String
     , optRegex :: Maybe String
     , optGlobPattern :: Maybe String
+    , optMerge :: Bool
     , optHelp :: Bool
     , optVersion :: Bool
 } deriving Show
@@ -39,6 +40,7 @@ defaultOptions = Options {
     , optCommand = ""
     , optRegex = Nothing
     , optGlobPattern = Nothing
+    , optMerge = False
     , optHelp = False
     , optVersion = False
 }
@@ -47,6 +49,7 @@ options :: [ OptDescr (Options -> Options) ]
 options =
     [ Option ['r'] ["regex"]    (OptArg (\arg opt -> opt { optRegex = arg }) "REGEX") "regex"
     , Option ['p'] ["pattern"]  (OptArg (\arg opt -> opt { optGlobPattern = arg }) "PATTERN") "shell glob pattern"
+    , Option ['m'] ["merge"]    (NoArg (\opt -> opt { optMerge = True })) "merge intermediate events"
     , Option ['V'] ["version"]  (NoArg $ \opt -> opt { optVersion = True} ) "print version"
     , Option ['h'] ["help"]     (NoArg $ \opt -> opt { optHelp = True } ) "show help"
     ]
@@ -76,11 +79,12 @@ parseArgs prg args =
 watch :: Options -> IO ()
 watch opts = do
         state <- atomically $ newTVar $ State False 0
+        let handler = (if optMerge opts then executeActionMerged state else executeActionSingle) cmd
         inotify <- initINotify
         dirs <- getAllDirectories
-        mapM_ (watchSingle inotify state) (path : dirs)
+        mapM_ (watchSingle inotify handler) (path : dirs)
         putStrLn "Listens to your home directory. Hit enter to terminate."
-        loop cmd state
+        loop (handler Nothing)
         {- removeWatch inotify wd -}
     where path = optPath opts
           cmd = optCommand opts
@@ -89,20 +93,20 @@ watch opts = do
           getAllDirectories :: IO [FilePath]
           getAllDirectories = find always (fileType ==? Directory) path
 
-          watchSingle :: INotify -> TVar State -> FilePath -> IO WatchDescriptor
-          watchSingle inotify state path' = addWatch inotify [ Create, Delete, Modify, Move ] path' $ handleEvent cmd state filter path'
+          watchSingle :: INotify -> (Maybe FilePath -> IO ()) -> FilePath -> IO WatchDescriptor
+          watchSingle inotify handler path' = addWatch inotify [ Create, Delete, Modify, Move ] path' $ handleEvent path' filter handler
 
-loop :: String -> TVar State -> IO ()
-loop cmd state = do
+loop :: IO () -> IO ()
+loop handler = do
     key <- getChar
     when ((ord key) == 10) $ do
-        executeAction cmd state Nothing
-        loop cmd state
+        handler
+        loop handler 
     when (key == 'q') $ exitWith ExitSuccess
 
-handleEvent :: String -> TVar State -> (FilePath -> Bool) -> FilePath -> Event -> IO ()
-handleEvent cmd state filter path event = do
-    when (shouldExecute event filter) $ executeAction cmd state $ getFile event >>= \f -> return (path </> f)
+handleEvent :: FilePath -> (FilePath -> Bool) -> (Maybe FilePath -> IO ()) -> Event -> IO ()
+handleEvent path filter handler event = do
+    when (shouldExecute event filter) $ handler $ getFile event >>= \f -> return (path </> f)
 
 shouldExecute :: Event -> (FilePath -> Bool) -> Bool
 shouldExecute (Opened False (Just path)) f = f path
@@ -131,13 +135,25 @@ substitute p ('$':'f':rest) = p ++ substitute p rest
 substitute p (x:rest) = x : substitute p rest
 substitute _ [] = []
 
-executeAction :: String -> TVar State -> Maybe FilePath -> IO ()
-executeAction cmd state path = fork action
+executeAction :: String -> Maybe FilePath -> IO ()
+executeAction cmd path = do
+  _ <- system cmd'
+  putStr $ take 20 $ repeat '-'
+  putStr " "
+  time <- getCurrentTime
+  putStr $ show time
   where
-  fork a = forkIO a >> return ()
   cmd' = case path of
     Nothing -> substitute "'<<unknown>>'" cmd
     Just p -> substitute p cmd
+
+executeActionSingle :: String -> Maybe FilePath -> IO ()
+executeActionSingle cmd path = executeAction cmd path >> putStrLn ""
+
+executeActionMerged :: TVar State -> String -> Maybe FilePath -> IO ()
+executeActionMerged state cmd path = fork action
+  where
+  fork a = forkIO a >> return ()
 
   action = do
     continue <- atomically $ do 
@@ -146,11 +162,7 @@ executeAction cmd state path = fork action
         then writeTVar state (s {stCounter = stCounter s + 1}) >> return False
         else writeTVar state (s {stRunning = True}) >> return True
     when continue $ do
-      _ <- system cmd'
-      putStr $ take 20 $ repeat '-'
-      putStr " "
-      time <- getCurrentTime
-      putStr $ show time
+      executeAction cmd path
       counter <- atomically $ do
         s <- readTVar state
         writeTVar state (s {stRunning = False, stCounter = 0})
