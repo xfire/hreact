@@ -1,4 +1,5 @@
 import System.IO
+import Data.List (intercalate)
 import System.Environment (getArgs, getProgName)
 import Data.Time (getCurrentTime)
 import System.Exit (exitWith, ExitCode (ExitSuccess, ExitFailure))
@@ -11,63 +12,69 @@ import System.INotify
 import System.FilePath.GlobPattern ((~~))
 import System.FilePath.Find
 
+data OptError = OptError Int String
  
-data Options = Options
-    { optRegex :: Maybe String
+data Options = Options {
+      optPath :: FilePath
+    , optCommand :: String
+    , optRegex :: Maybe String
     , optGlobPattern :: Maybe String
-    } deriving Show
-defaultOptions = Options
-    { optRegex = Nothing
-    , optGlobPattern = Nothing
-    }
+    , optHelp :: Bool
+    , optVersion :: Bool
+} deriving Show
 
-options :: [ OptDescr (Options -> IO Options) ]
+defaultOptions = Options {
+      optPath = ""
+    , optCommand = ""
+    , optRegex = Nothing
+    , optGlobPattern = Nothing
+    , optHelp = False
+    , optVersion = False
+}
+
+options :: [ OptDescr (Options -> Options) ]
 options =
-    [ Option ['r'] ["regex"]    (OptArg regex "REGEX") "regex"
-    , Option ['p'] ["pattern"]  (OptArg glob "PATTERN") "shell glob pattern"
-    , Option ['V'] ["version"]  (NoArg $ const $ showVersion >> exitWithSuccess) "print version"
-    , Option ['h'] ["help"]     (NoArg $ const $ showHelp >> exitWithSuccess) "show help"
+    [ Option ['r'] ["regex"]    (OptArg (\arg opt -> opt { optRegex = arg }) "REGEX") "regex"
+    , Option ['p'] ["pattern"]  (OptArg (\arg opt -> opt { optGlobPattern = arg }) "PATTERN") "shell glob pattern"
+    , Option ['V'] ["version"]  (NoArg $ \opt -> opt { optVersion = True} ) "print version"
+    , Option ['h'] ["help"]     (NoArg $ \opt -> opt { optHelp = True } ) "show help"
     ]
 
-regex arg opt = return opt { optRegex = arg }
-glob arg opt = return opt { optGlobPattern = arg }
+version :: String
+version = "hreact version 0.01"
 
-showVersion :: IO ()
-showVersion = do
-    hPutStrLn stderr "Version 0.01"
-
-showHelp :: IO ()
-showHelp = do
-    prg <- getProgName
+usage :: String -> String
+usage prg =
     let header = "usage: " ++ prg ++ " [OPTIONS] directory command"
-    hPutStrLn stderr ((usageInfo header options))
-    hFlush stderr
+    in usageInfo header options
 
-exitWithSuccess :: IO a
-exitWithSuccess = exitWith ExitSuccess
+parseArgs :: String -> [String] -> Either OptError Options
+parseArgs prg args =
+    case getOpt Permute options args of
+        (o, no, []) -> checkOptions o no
+        (_, _, err) -> Left $ OptError 1 $ intercalate "\n" (err ++ [use])
+    where use = usage prg
+          checkOptions opts noOpts
+                | optHelp o    = Left $ OptError 1 $ use
+                | optVersion o = Left $ OptError 1 $ version
+                | otherwise    = x noOpts
+            where o = foldl (flip id) defaultOptions opts
+                  x (path:command:[]) = Right $ o { optPath = path, optCommand = command }
+                  x _ = Left $ OptError 1 $ "please specify directory and command\n\n" ++ use
 
-exitErrors :: [String] -> IO ()
-exitErrors errors = do
-    mapM_ (hPutStrLn stderr) errors
-    showHelp
-    exitWith $ ExitFailure 1
-
-parseArgs :: [String] -> IO (Options, [String])
-parseArgs args = do
-    let ( actions, nonOpts, errors ) = getOpt RequireOrder options args
-    when (not (null errors)) $ exitErrors errors
-    opts <- foldl (>>=) (return defaultOptions) actions
-    return (opts, nonOpts)
-
-watch :: FilePath -> String -> (FilePath -> Bool) -> IO ()
-watch path cmd filter = do
+watch :: Options -> IO ()
+watch opts = do
         inotify <- initINotify
         dirs <- getAllDirectories path
         mapM_ (watchSingle inotify cmd filter) (path : dirs)
         putStrLn "Listens to your home directory. Hit enter to terminate."
         loop cmd
         {- removeWatch inotify wd -}
-    where getAllDirectories :: FilePath -> IO [FilePath]
+    where path = optPath opts
+          cmd = optCommand opts
+          filter = filterPath opts
+
+          getAllDirectories :: FilePath -> IO [FilePath]
           getAllDirectories path = find always (fileType ==? Directory) path
 
           watchSingle :: INotify -> String -> (FilePath -> Bool) -> FilePath -> IO WatchDescriptor
@@ -116,9 +123,11 @@ filterPath o path = or $ fmap ($ path) [filterRegex $ optRegex o, filterGlob $ o
 main = do
     hSetBuffering stdin NoBuffering
     args <- getArgs
-    (opts, n) <- parseArgs args
-    case n of
-        (path:command:_) -> watch path command (filterPath opts)
-        [_] -> exitErrors ["please specify the command", ""]
-        _ -> exitErrors ["please specify path and command", ""]
+    prg <- getProgName
+    opts <- exitOnError $ parseArgs prg args
+    watch opts
+
+exitOnError :: Either OptError a -> IO a
+exitOnError (Left (OptError code msg)) = hPutStrLn stderr (msg) >> exitWith (ExitFailure code)
+exitOnError (Right x) = return x
 
