@@ -13,6 +13,15 @@ import System.FilePath.GlobPattern ((~~))
 import System.FilePath.Find
 import System.FilePath ((</>))
 import Control.Applicative ((<$>), (<*>))
+import Control.Monad.STM (atomically)
+import Control.Concurrent.STM.TVar (newTVar, TVar, readTVar, writeTVar)
+import Control.Concurrent (forkIO)
+import Control.Monad (guard)
+
+data State = State {
+  running :: Bool,
+  counter :: Int
+  } 
 
 data OptError = OptError Int String
  
@@ -66,11 +75,12 @@ parseArgs prg args =
 
 watch :: Options -> IO ()
 watch opts = do
+        state <- atomically $ newTVar $ State False 0
         inotify <- initINotify
         dirs <- getAllDirectories path
-        mapM_ (watchSingle inotify cmd filter) (path : dirs)
+        mapM_ (watchSingle inotify cmd state filter) (path : dirs)
         putStrLn "Listens to your home directory. Hit enter to terminate."
-        loop cmd
+        loop cmd state
         {- removeWatch inotify wd -}
     where path = optPath opts
           cmd = optCommand opts
@@ -79,19 +89,20 @@ watch opts = do
           getAllDirectories :: FilePath -> IO [FilePath]
           getAllDirectories path = find always (fileType ==? Directory) path
 
-          watchSingle :: INotify -> String -> (FilePath -> Bool) -> FilePath -> IO WatchDescriptor
-          watchSingle inotify cmd filter path = addWatch inotify [ Create, Delete, Modify, Move ] path $ handleEvent cmd filter path
+          watchSingle :: INotify -> String -> TVar State -> (FilePath -> Bool) -> FilePath -> IO WatchDescriptor
+          watchSingle inotify cmd state filter path = addWatch inotify [ Create, Delete, Modify, Move ] path $ handleEvent cmd state filter path
 
-loop :: String -> IO ()
-loop cmd = do
+loop :: String -> TVar State -> IO ()
+loop cmd state = do
     key <- getChar
     when ((ord key) == 10) $ do
-        executeAction cmd Nothing
-        loop cmd
+        executeAction cmd state Nothing
+        loop cmd state
+    when (key == 'q') $ exitWith ExitSuccess
 
-handleEvent :: String -> (FilePath -> Bool) -> FilePath -> Event -> IO ()
-handleEvent cmd filter path event = do
-    when (shouldExecute event filter) $ executeAction cmd $ getFile event >>= \f -> return (path </> f)
+handleEvent :: String -> TVar State -> (FilePath -> Bool) -> FilePath -> Event -> IO ()
+handleEvent cmd state filter path event = do
+    when (shouldExecute event filter) $ executeAction cmd state $ getFile event >>= \f -> return (path </> f)
 
 shouldExecute :: Event -> (FilePath -> Bool) -> Bool
 shouldExecute (Opened False (Just path)) f = f path
@@ -114,22 +125,38 @@ getFile (MovedIn _ path _) = Just path
 getFile (MovedOut _ path _) = Just path
 getFile _ = Nothing
 
-executeAction :: String -> Maybe FilePath -> IO ()
-executeAction cmd path = do
-    system cmd'
-    putStr $ take 20 $ repeat '-'
-    putStr " "
-    time <- getCurrentTime
-    putStrLn $ show time
+substitute :: String -> String -> String
+substitute p ('\\':'$':'f':rest) = "\\$f" ++ substitute p rest
+substitute p ('$':'f':rest) = p ++ substitute p rest
+substitute p (x:rest) = x : substitute p rest
+substitute _ [] = []
 
-    where
-      cmd' = case path of
-        Nothing -> substitute "<<unknown>>" cmd
-        Just p -> substitute p cmd
-      substitute p ('\\':'$':'f':rest) = "\\$f" ++ substitute p rest
-      substitute p ('$':'f':rest) = p ++ substitute p rest
-      substitute p (x:rest) = x : substitute p rest
-      substitute _ [] = []
+executeAction :: String -> TVar State -> Maybe FilePath -> IO ()
+executeAction cmd state path = fork action
+  where
+  fork a = forkIO a >> return ()
+  cmd' = case path of
+    Nothing -> substitute "<<unknown>>" cmd
+    Just p -> substitute p cmd
+
+  action = do
+    continue <- atomically $ do 
+      s <- readTVar state
+      if running s
+        then writeTVar state (s {counter = counter s + 1}) >> return False
+        else writeTVar state (s {running = True}) >> return True
+    when continue $ do
+      system cmd'
+      putStr $ take 20 $ repeat '-'
+      putStr " "
+      time <- getCurrentTime
+      putStr $ show time
+      counter <- atomically $ do
+        s <- readTVar state
+        writeTVar state (s {running = False, counter = 0})
+        return $ counter s
+      when (counter > 0) $ putStr $ " (" ++ show counter ++ ")"
+      putStrLn ""
 
 filterPath :: Options -> FilePath -> Bool
 filterPath o path = or $ fmap ($ path) [filterRegex $ optRegex o, filterGlob $ optGlobPattern o] 
