@@ -10,7 +10,6 @@ import Text.Regex.Posix ((=~))
 import System.INotify
 import System.FilePath.GlobPattern ((~~))
 import System.FilePath.Find
-
  
 data Options = Options
     { optRegex :: Maybe String
@@ -77,12 +76,12 @@ loop :: String -> IO ()
 loop cmd = do
     key <- getChar
     when ((ord key) == 10) $ do
-        executeAction cmd
+        executeAction cmd Nothing
         loop cmd
 
 handleEvent :: String -> (FilePath -> Bool) -> Event -> IO ()
 handleEvent cmd filter event = do
-    when (shouldExecute event filter) $ executeAction cmd
+    when (shouldExecute event filter) $ executeAction cmd $ getPath event
 
 shouldExecute :: Event -> (FilePath -> Bool) -> Bool
 shouldExecute (Opened False (Just path)) f = f path
@@ -95,13 +94,32 @@ shouldExecute (MovedOut False path _) f = f path
 shouldExecute (MovedSelf _) _ = True
 shouldExecute _ _ = False
 
-executeAction :: String -> IO ()
-executeAction cmd = do
-    system cmd
+getPath :: Event -> Maybe FilePath
+getPath (Opened _ jpath) = jpath
+getPath (Closed _ jpath _) = jpath
+getPath (Created _ path) = Just path
+getPath (Deleted _ path) = Just path
+getPath (Modified _ jpath) = jpath
+getPath (MovedIn _ path _) = Just path
+getPath (MovedOut _ path _) = Just path
+getPath _ = Nothing
+
+executeAction :: String -> Maybe FilePath -> IO ()
+executeAction cmd path = do
+    system cmd'
     putStr $ take 20 $ repeat '-'
     putStr " "
     time <- getCurrentTime
     putStrLn $ show time
+
+    where
+      cmd' = case path of
+        Nothing -> substitute "<<unknown>>" cmd
+        Just p -> substitute p cmd
+      substitute p ('\\':'$':'f':rest) = "\\$f" ++ substitute p rest
+      substitute p ('$':'f':rest) = p ++ substitute p rest
+      substitute p (x:rest) = x : substitute p rest
+      substitute _ [] = []
 
 filterPath :: Options -> FilePath -> Bool
 filterPath o path = or $ fmap ($ path) [filterRegex $ optRegex o, filterGlob $ optGlobPattern o] 
