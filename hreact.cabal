@@ -18,13 +18,15 @@ data-files:          LICENSE
 
 Executable hreact
     Main-is:         hreact.hs
+    Ghc-Options:     -Wall -threaded
     Build-Depends:   base,
                      time,
                      regex-posix,
                      process,
                      filemanip,
                      hinotify >= 0.3.1,
-                     filepath == 1.2.*
+                     filepath == 1.2.*,
+                     stm == 2.2.*
 
 
 source-repository head
