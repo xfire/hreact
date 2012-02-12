@@ -136,7 +136,7 @@ executeAction cmd state path = fork action
   where
   fork a = forkIO a >> return ()
   cmd' = case path of
-    Nothing -> substitute "<<unknown>>" cmd
+    Nothing -> substitute "'<<unknown>>'" cmd
     Just p -> substitute p cmd
 
   action = do
