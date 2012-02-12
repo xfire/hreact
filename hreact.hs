@@ -1,26 +1,25 @@
-import System.IO
-import Data.List (intercalate)
-import System.Environment (getArgs, getProgName)
-import Data.Time (getCurrentTime)
-import System.Exit (exitWith, ExitCode (ExitSuccess, ExitFailure))
-import System.Console.GetOpt
-import System.Process
-import Data.Char (ord)
-import Control.Monad (when)
-import Text.Regex.Posix ((=~))
-import System.INotify
-import System.FilePath.GlobPattern ((~~))
-import System.FilePath.Find
-import System.FilePath ((</>))
-import Control.Applicative ((<$>), (<*>))
-import Control.Monad.STM (atomically)
-import Control.Concurrent.STM.TVar (newTVar, TVar, readTVar, writeTVar)
 import Control.Concurrent (forkIO)
-import Control.Monad (guard)
+import Control.Concurrent.STM.TVar (newTVar, TVar, readTVar, writeTVar)
+import Control.Monad.STM (atomically)
+import Control.Monad (when)
+import Data.Char (ord)
+import Data.List (intercalate)
+import Data.Time (getCurrentTime)
+import Prelude hiding (filter)
+import System.Console.GetOpt
+import System.Environment (getArgs, getProgName)
+import System.Exit (exitWith, ExitCode (ExitSuccess, ExitFailure))
+import System.FilePath ((</>))
+import System.FilePath.Find
+import System.FilePath.GlobPattern ((~~))
+import System.INotify
+import System.IO
+import System.Process
+import Text.Regex.Posix ((=~))
 
 data State = State {
-  running :: Bool,
-  counter :: Int
+  stRunning :: Bool,
+  stCounter :: Int
   } 
 
 data OptError = OptError Int String
@@ -34,6 +33,7 @@ data Options = Options {
     , optVersion :: Bool
 } deriving Show
 
+defaultOptions :: Options
 defaultOptions = Options {
       optPath = ""
     , optCommand = ""
@@ -77,8 +77,8 @@ watch :: Options -> IO ()
 watch opts = do
         state <- atomically $ newTVar $ State False 0
         inotify <- initINotify
-        dirs <- getAllDirectories path
-        mapM_ (watchSingle inotify cmd state filter) (path : dirs)
+        dirs <- getAllDirectories
+        mapM_ (watchSingle inotify state) (path : dirs)
         putStrLn "Listens to your home directory. Hit enter to terminate."
         loop cmd state
         {- removeWatch inotify wd -}
@@ -86,11 +86,11 @@ watch opts = do
           cmd = optCommand opts
           filter = filterPath opts
 
-          getAllDirectories :: FilePath -> IO [FilePath]
-          getAllDirectories path = find always (fileType ==? Directory) path
+          getAllDirectories :: IO [FilePath]
+          getAllDirectories = find always (fileType ==? Directory) path
 
-          watchSingle :: INotify -> String -> TVar State -> (FilePath -> Bool) -> FilePath -> IO WatchDescriptor
-          watchSingle inotify cmd state filter path = addWatch inotify [ Create, Delete, Modify, Move ] path $ handleEvent cmd state filter path
+          watchSingle :: INotify -> TVar State -> FilePath -> IO WatchDescriptor
+          watchSingle inotify state path' = addWatch inotify [ Create, Delete, Modify, Move ] path' $ handleEvent cmd state filter path'
 
 loop :: String -> TVar State -> IO ()
 loop cmd state = do
@@ -142,32 +142,33 @@ executeAction cmd state path = fork action
   action = do
     continue <- atomically $ do 
       s <- readTVar state
-      if running s
-        then writeTVar state (s {counter = counter s + 1}) >> return False
-        else writeTVar state (s {running = True}) >> return True
+      if stRunning s
+        then writeTVar state (s {stCounter = stCounter s + 1}) >> return False
+        else writeTVar state (s {stRunning = True}) >> return True
     when continue $ do
-      system cmd'
+      _ <- system cmd'
       putStr $ take 20 $ repeat '-'
       putStr " "
       time <- getCurrentTime
       putStr $ show time
       counter <- atomically $ do
         s <- readTVar state
-        writeTVar state (s {running = False, counter = 0})
-        return $ counter s
+        writeTVar state (s {stRunning = False, stCounter = 0})
+        return $ stCounter s
       when (counter > 0) $ putStr $ " (" ++ show counter ++ ")"
       putStrLn ""
 
 filterPath :: Options -> FilePath -> Bool
-filterPath o path = or $ fmap ($ path) [filterRegex $ optRegex o, filterGlob $ optGlobPattern o] 
-    where filterRegex :: Maybe String -> FilePath -> Bool
-          filterRegex (Just regex) path = path =~ regex
-          filterRegex _ _ = False
+filterPath o path = or $ [filterRegex $ optRegex o, filterGlob $ optGlobPattern o] 
+    where filterRegex :: Maybe String -> Bool
+          filterRegex (Just regex) = path =~ regex
+          filterRegex _ = False
 
-          filterGlob :: Maybe String -> FilePath -> Bool
-          filterGlob (Just glob) path = path ~~ glob
-          filterGlob _ _ = False
+          filterGlob :: Maybe String -> Bool
+          filterGlob (Just glob) = path ~~ glob
+          filterGlob _ = False
 
+main :: IO ()
 main = do
     hSetBuffering stdin NoBuffering
     args <- getArgs
