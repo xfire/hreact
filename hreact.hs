@@ -11,6 +11,8 @@ import Text.Regex.Posix ((=~))
 import System.INotify
 import System.FilePath.GlobPattern ((~~))
 import System.FilePath.Find
+import System.FilePath ((</>))
+import Control.Applicative ((<$>), (<*>))
 
 data OptError = OptError Int String
  
@@ -78,18 +80,18 @@ watch opts = do
           getAllDirectories path = find always (fileType ==? Directory) path
 
           watchSingle :: INotify -> String -> (FilePath -> Bool) -> FilePath -> IO WatchDescriptor
-          watchSingle inotify cmd filter path = addWatch inotify [ Create, Delete, Modify, Move ] path $ handleEvent cmd filter
+          watchSingle inotify cmd filter path = addWatch inotify [ Create, Delete, Modify, Move ] path $ handleEvent cmd filter path
 
 loop :: String -> IO ()
 loop cmd = do
     key <- getChar
     when ((ord key) == 10) $ do
-        executeAction cmd
+        executeAction cmd Nothing
         loop cmd
 
-handleEvent :: String -> (FilePath -> Bool) -> Event -> IO ()
-handleEvent cmd filter event = do
-    when (shouldExecute event filter) $ executeAction cmd
+handleEvent :: String -> (FilePath -> Bool) -> FilePath -> Event -> IO ()
+handleEvent cmd filter path event = do
+    when (shouldExecute event filter) $ executeAction cmd $ getFile event >>= \f -> return (path </> f)
 
 shouldExecute :: Event -> (FilePath -> Bool) -> Bool
 shouldExecute (Opened False (Just path)) f = f path
@@ -102,13 +104,32 @@ shouldExecute (MovedOut False path _) f = f path
 shouldExecute (MovedSelf _) _ = True
 shouldExecute _ _ = False
 
-executeAction :: String -> IO ()
-executeAction cmd = do
-    system cmd
+getFile :: Event -> Maybe FilePath
+getFile (Opened _ jpath) = jpath
+getFile (Closed _ jpath _) = jpath
+getFile (Created _ path) = Just path
+getFile (Deleted _ path) = Just path
+getFile (Modified _ jpath) = jpath
+getFile (MovedIn _ path _) = Just path
+getFile (MovedOut _ path _) = Just path
+getFile _ = Nothing
+
+executeAction :: String -> Maybe FilePath -> IO ()
+executeAction cmd path = do
+    system cmd'
     putStr $ take 20 $ repeat '-'
     putStr " "
     time <- getCurrentTime
     putStrLn $ show time
+
+    where
+      cmd' = case path of
+        Nothing -> substitute "<<unknown>>" cmd
+        Just p -> substitute p cmd
+      substitute p ('\\':'$':'f':rest) = "\\$f" ++ substitute p rest
+      substitute p ('$':'f':rest) = p ++ substitute p rest
+      substitute p (x:rest) = x : substitute p rest
+      substitute _ [] = []
 
 filterPath :: Options -> FilePath -> Bool
 filterPath o path = or $ fmap ($ path) [filterRegex $ optRegex o, filterGlob $ optGlobPattern o] 
