@@ -10,6 +10,8 @@ import Text.Regex.Posix ((=~))
 import System.INotify
 import System.FilePath.GlobPattern ((~~))
 import System.FilePath.Find
+import System.FilePath ((</>))
+import Control.Applicative ((<$>), (<*>))
  
 data Options = Options
     { optRegex :: Maybe String
@@ -70,7 +72,7 @@ watch path cmd filter = do
           getAllDirectories path = find always (fileType ==? Directory) path
 
           watchSingle :: INotify -> String -> (FilePath -> Bool) -> FilePath -> IO WatchDescriptor
-          watchSingle inotify cmd filter path = addWatch inotify [ Create, Delete, Modify, Move ] path $ handleEvent cmd filter
+          watchSingle inotify cmd filter path = addWatch inotify [ Create, Delete, Modify, Move ] path $ handleEvent cmd filter path
 
 loop :: String -> IO ()
 loop cmd = do
@@ -79,9 +81,9 @@ loop cmd = do
         executeAction cmd Nothing
         loop cmd
 
-handleEvent :: String -> (FilePath -> Bool) -> Event -> IO ()
-handleEvent cmd filter event = do
-    when (shouldExecute event filter) $ executeAction cmd $ getPath event
+handleEvent :: String -> (FilePath -> Bool) -> FilePath -> Event -> IO ()
+handleEvent cmd filter path event = do
+    when (shouldExecute event filter) $ executeAction cmd $ getFile event >>= \f -> return (path </> f)
 
 shouldExecute :: Event -> (FilePath -> Bool) -> Bool
 shouldExecute (Opened False (Just path)) f = f path
@@ -94,15 +96,15 @@ shouldExecute (MovedOut False path _) f = f path
 shouldExecute (MovedSelf _) _ = True
 shouldExecute _ _ = False
 
-getPath :: Event -> Maybe FilePath
-getPath (Opened _ jpath) = jpath
-getPath (Closed _ jpath _) = jpath
-getPath (Created _ path) = Just path
-getPath (Deleted _ path) = Just path
-getPath (Modified _ jpath) = jpath
-getPath (MovedIn _ path _) = Just path
-getPath (MovedOut _ path _) = Just path
-getPath _ = Nothing
+getFile :: Event -> Maybe FilePath
+getFile (Opened _ jpath) = jpath
+getFile (Closed _ jpath _) = jpath
+getFile (Created _ path) = Just path
+getFile (Deleted _ path) = Just path
+getFile (Modified _ jpath) = jpath
+getFile (MovedIn _ path _) = Just path
+getFile (MovedOut _ path _) = Just path
+getFile _ = Nothing
 
 executeAction :: String -> Maybe FilePath -> IO ()
 executeAction cmd path = do
